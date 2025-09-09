@@ -10,85 +10,71 @@ Email address:yma60@student.ubc.ca, singhaniamanushree@gmail.com, oliveirade.mat
 *******************
 """
 
-from typing import Optional
+from typing import Optional, Dict, List
+from collections import deque
 from ar_hackathon.models.game_state import GameState
 from ar_hackathon.models.package import Package
-
-def dijkstra(state: GameState, src: str, dst: str):
-    """Run Dijkstra’s algorithm from src to dst and return path as a list of FC IDs."""
-    # Build adjacency list
-    graph = {}
-    for conn in state.connections:
-        u, v, w = conn.source_fc, conn.dest_fc, conn.length
-        graph.setdefault(u, []).append((v, w))
-        graph.setdefault(v, []).append((u, w))  # undirected graph
-
-    # Initialize distances
-    dist = {fc.id: float('inf') for fc in state.fulfillment_centers}
-    prev = {}
-    dist[src] = 0
-
-    # Priority queue (min-heap)
-    pq = [(0, src)]
-    while pq:
-        d, u = heapq.heappop(pq)
-        if u == dst:
-            break
-        if d > dist[u]:
-            continue
-        for v, w in graph.get(u, []):
-            nd = d + w
-            if nd < dist[v]:
-                dist[v] = nd
-                prev[v] = u
-                heapq.heappush(pq, (nd, v))
-
-    # No path found
-    if dst not in prev and src != dst:
-        return []
-
-    # Reconstruct path from dst to src
-    path = []
-    cur = dst
-    while cur != src:
-        path.append(cur)
-        cur = prev[cur]
-    path.reverse()
-    return path  # list of FC IDs, excluding src
-
+from ar_hackathon.models.connection import Connection
 
 def route_package(state: GameState, package: Package) -> Optional[str]:
     """
-    Determine the next FC to route a package to using Dijkstra’s shortest path.
+    LEVEL 1 (unweighted, directed):
+    Choose the next hop that lies on a BFS-shortest path from current_fc to destination_fc.
+    Returns next FC id (str) or None to stay put.
     """
-    # If already at destination, no routing needed
-    if package.current_fc == package.destination_fc:
-        return None  
+    src = package.current_fc          # str
+    dst = package.destination_fc      # str
 
-    # Get shortest path from current location to destination
-    path = dijkstra(state, package.current_fc, package.destination_fc)
+    if not src or not dst or src == dst:
+        return None
 
-    if not path:
-        return None  # no valid route
+    # Build directed adjacency using Connection.from_fc -> Connection.to_fc
+    adj: Dict[str, List[str]] = {}
 
-    # Return the next hop (first FC in path)
-    print("Result: ", path[0])
-    return path[0]
+    # Materialize nodes
+    for fc in getattr(state, "fulfillment_centers", []):
+        fid = getattr(fc, "id", None)
+        if fid is not None and fid not in adj:
+            adj[fid] = []
 
-# def route_package(state: GameState, package: Package) -> Optional[str]:
-#     """
-#     Determine the next FC to route a package to.
-    
-#     This is the function that students will implement. The game engine will call
-#     this function for each package at each time step to determine where to route it.
-    
-#     Args:
-#         state: GameState object containing the current state of the network
-#         package: Package object containing information about the package
-        
-#     Returns:
-#         next_fc_id: ID of the next FC to route the package to, or None to stay at current FC
-#     """
-#     # Student implementation here
-    
-#     pass
+    # Add edges
+    for conn in getattr(state, "connections", []):
+        u = getattr(conn, "from_fc", None)
+        v = getattr(conn, "to_fc", None)
+        if u is None or v is None:
+            continue
+        adj.setdefault(u, []).append(v)
+        adj.setdefault(v, adj.get(v, []))  # ensure sink exists
+
+    # If either endpoint isn't in the graph, don't move
+    if src not in adj or dst not in adj:
+        return None
+
+    # Fast path: direct edge to destination
+    neighbors = adj.get(src, [])
+    if dst in neighbors:
+        return dst
+
+    # BFS that remembers only the first hop out of src (saves memory/time)
+    visited = set([src])
+    q = deque()
+
+    # Seed queue with neighbors of src, remembering their first hop (themselves)
+    for nb in neighbors:
+        if nb not in visited:
+            if nb == dst:
+                return nb
+            visited.add(nb)
+            q.append((nb, nb))  # (node, first_hop)
+
+    while q:
+        node, first_hop = q.popleft()
+        for nb in adj.get(node, []):
+            if nb not in visited:
+                if nb == dst:
+                    return first_hop
+                visited.add(nb)
+                q.append((nb, first_hop))
+
+    # No path from src to dst
+    return None
